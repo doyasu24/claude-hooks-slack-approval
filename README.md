@@ -1,6 +1,8 @@
 # Claude Code Slack Approval
 
-Approve Claude Code PermissionRequests and answer UserQuestions via Slack. Notify after timeout, or immediately when screen is locked.
+Approve Claude Code PermissionRequests via Slack. Notify after timeout, or immediately when screen is locked.
+
+Also notifies when Claude asks questions (AskUserQuestion), though answers must be provided in Claude Code directly (see [Limitations](#limitations)).
 
 ## Requirements
 
@@ -119,7 +121,7 @@ Create `~/.claude/settings.json` (or `.claude/settings.json` in your project roo
 
 `timeout` is required — the [default is 60 seconds](https://code.claude.com/docs/en/hooks#hook-execution-details), which is too short for approval workflows. The hook waits indefinitely for Slack response, so set a long timeout (e.g., 86400 seconds = 24 hours).
 
-**Note:** For `AskUserQuestion` hooks, `--delay` and `--notify-immediately-on-lock` options are ignored. Questions are always sent to Slack immediately.
+**Note:** For `AskUserQuestion` hooks, `--delay` and `--notify-immediately-on-lock` options are ignored. Questions are always sent to Slack immediately as notifications only (answers must be provided in Claude Code terminal).
 
 ## Command Line Arguments
 
@@ -177,13 +179,14 @@ Since Slack's interactive buttons don't work on Apple Watch, you can approve/den
 
 Note: Emoji reactions and thread replies only work for PermissionRequest (tool approvals), not for AskUserQuestion (which requires selecting specific options).
 
-### AskUserQuestion (Interactive Q&A)
+### AskUserQuestion (Notification Only)
 
-When Claude Code asks a question via `AskUserQuestion` tool, the question and options are sent to Slack. You can answer by clicking option buttons or entering custom text via "Other..." button.
+When Claude Code asks a question via `AskUserQuestion` tool, a notification is sent to Slack showing the question and available options. **However, you must answer the question directly in the Claude Code terminal**, not via Slack.
 
-- Supports single-select and multi-select questions
-- Option descriptions are shown if available
-- Custom answers can be entered via modal dialog
+This is a notification-only feature to alert you when Claude is waiting for input.
+
+> **Why can't I answer via Slack?**
+> Claude Code's hook system currently doesn't support injecting answers to `AskUserQuestion` via `updatedInput`. This is a known limitation. See [GitHub Issue #15872](https://github.com/anthropics/claude-code/issues/15872) for the feature request.
 
 ## Session Management
 
@@ -285,7 +288,7 @@ The hook communicates with a background server via Unix socket. The server uses 
 5. hook.ts outputs result to stdout
 6. Claude Code receives `allow` or `deny`
 
-### Question Flow
+### Question Flow (Notification Only)
 
 #### Slack Message Example
 
@@ -297,21 +300,32 @@ The hook communicates with a background server via Unix socket. The server uses 
 │                                             │
 │ [Auth] Which authentication method?         │
 │                                             │
-│ [JWT]  [OAuth]  [Session]  [Other...]       │
-│                                             │
 │ • JWT: Stateless token-based auth           │
 │ • OAuth: Third-party authentication         │
 │ • Session: Server-side session management   │
+│                                             │
+│ 💡 Answer in Claude Code terminal           │
 └─────────────────────────────────────────────┘
 ```
 
-#### After Answer
+#### Flow
 
-1. User clicks an option button (or "Other..." for custom input)
-2. For "Other...", a modal opens for text input
-3. Answer is recorded and message updates
-4. hook.ts receives the answer
-5. Returns answer to Claude Code
+1. Claude Code asks a question via `AskUserQuestion` tool
+2. Notification is sent to Slack (question and options displayed)
+3. **User answers directly in Claude Code terminal** (not via Slack)
+4. Claude Code receives the answer and continues
+
+## Limitations
+
+### AskUserQuestion answers cannot be provided via Slack
+
+Due to Claude Code's hook architecture, answers to `AskUserQuestion` cannot be injected via hooks. The `PreToolUse` hook's `updatedInput` mechanism modifies tool inputs, but `answers` are treated as outputs that must come from user interaction in the terminal.
+
+**Current behavior:**
+- Questions are notified to Slack (notification only)
+- Users must answer in Claude Code terminal directly
+
+**Tracking:** [GitHub Issue #15872](https://github.com/anthropics/claude-code/issues/15872) - Feature request for better hook support for AskUserQuestion
 
 ## License
 

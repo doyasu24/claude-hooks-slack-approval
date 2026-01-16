@@ -202,9 +202,9 @@ function buildResultBlocks(
 }
 
 /**
- * Build question notification blocks for Slack message (notification only, no buttons)
+ * Build question blocks for Slack message with answer buttons
  */
-function buildQuestionNotificationBlocks(sessionId: string, questions: Question[]): SlackBlocks {
+function buildQuestionBlocks(requestId: string, sessionId: string, questions: Question[], includeButtons: boolean): SlackBlocks {
   const mention = SLACK_MENTION_USER_ID ? `<@${SLACK_MENTION_USER_ID}> ` : '';
   const blocks: SlackBlocks = [
     {
@@ -223,8 +223,8 @@ function buildQuestionNotificationBlocks(sessionId: string, questions: Question[
     },
   ];
 
-  // Add each question (no buttons - notification only)
-  questions.forEach((q) => {
+  // Add each question with option buttons
+  questions.forEach((q, qIndex) => {
     blocks.push({
       type: 'section',
       text: {
@@ -233,8 +233,61 @@ function buildQuestionNotificationBlocks(sessionId: string, questions: Question[
       },
     });
 
-    // Show options as text list
-    if (q.options.length > 0) {
+    if (includeButtons && q.options.length > 0) {
+      // Create buttons for each option (max 5 buttons per action block in Slack)
+      // Slice to 4 options + 1 "Other" button
+      const optionButtons = q.options.slice(0, 4).map((opt, optIndex) => ({
+        type: 'button',
+        text: {
+          type: 'plain_text',
+          text: opt.label.substring(0, 75), // Slack button text limit
+          emoji: true,
+        },
+        action_id: `question_${qIndex}_${optIndex}`,
+        value: JSON.stringify({
+          requestId,
+          questionIndex: qIndex,
+          optionIndex: optIndex,
+          label: opt.label,
+        }),
+      }));
+
+      // Add "Other" button for custom input
+      optionButtons.push({
+        type: 'button',
+        text: {
+          type: 'plain_text',
+          text: '✏️ Other',
+          emoji: true,
+        },
+        action_id: `question_${qIndex}_other`,
+        value: JSON.stringify({
+          requestId,
+          questionIndex: qIndex,
+          optionIndex: -1,
+          label: 'Other',
+        }),
+      });
+
+      blocks.push({
+        type: 'actions',
+        block_id: `question_${requestId}_${qIndex}`,
+        elements: optionButtons,
+      });
+
+      // Show option descriptions if any
+      const descriptions = q.options
+        .filter((opt) => opt.description)
+        .map((opt) => `• *${opt.label}*: ${opt.description}`)
+        .join('\n');
+      if (descriptions) {
+        blocks.push({
+          type: 'context',
+          elements: [{ type: 'mrkdwn', text: descriptions }],
+        });
+      }
+    } else if (!includeButtons && q.options.length > 0) {
+      // Show options as text list when buttons are disabled
       const optionsList = q.options.map((opt) => `• ${opt.label}${opt.description ? `: ${opt.description}` : ''}`).join('\n');
       blocks.push({
         type: 'context',
@@ -243,11 +296,19 @@ function buildQuestionNotificationBlocks(sessionId: string, questions: Question[
     }
   });
 
-  // Add note that answer should be given in Claude Code
-  blocks.push({
-    type: 'context',
-    elements: [{ type: 'mrkdwn', text: '_💡 Claude Codeで回答してください_' }],
-  });
+  // Add note based on mode
+  if (includeButtons) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: '_💡 ボタンをクリックするか、スレッドで回答を入力してください_' }],
+    });
+  } else {
+    // Notification-only mode
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: '_💡 Claude Codeのターミナルで回答してください_' }],
+    });
+  }
 
   return blocks;
 }
@@ -460,31 +521,52 @@ function buildHookOutput(pending: PendingRequest, decision: 'allow' | 'deny', an
 function sendResponse(pending: PendingRequest, decision: 'allow' | 'deny', answers?: Record<string, string | string[]>): void {
   const response = buildHookOutput(pending, decision, answers);
   const responseStr = JSON.stringify(response) + '\n';
+  let sent = false;
+
+  console.log(`[${new Date().toISOString()}] Sending response: ${JSON.stringify(response)}`);
 
   // Send to primary socket
-  if (pending.socket) {
+  if (pending.socket && !pending.socket.destroyed && pending.socket.writable) {
     try {
-      console.log(`[${new Date().toISOString()}] Sending response: ${JSON.stringify(response)}`);
-      pending.socket.write(responseStr);
-      pending.socket.end();
+      console.log(`[${new Date().toISOString()}] Sending to primary socket (writable=${pending.socket.writable}, destroyed=${pending.socket.destroyed})`);
+      // Use end(data) to ensure data is flushed before close
+      pending.socket.end(responseStr, () => {
+        console.log(`[${new Date().toISOString()}] Primary socket flush completed for: ${pending.id}`);
+      });
+      sent = true;
+      console.log(`[${new Date().toISOString()}] Primary socket send initiated for: ${pending.id}`);
     } catch (error) {
-      console.error('Failed to send response to socket:', error);
+      console.error(`[${new Date().toISOString()}] Failed to send response to primary socket:`, error);
     }
   } else {
-    console.log(`[${new Date().toISOString()}] Primary socket already closed for: ${pending.id}`);
+    console.log(`[${new Date().toISOString()}] Primary socket not available: socket=${!!pending.socket}, destroyed=${pending.socket?.destroyed}, writable=${pending.socket?.writable}`);
   }
 
   // Send to additional sockets (from duplicate requests)
   if (pending.additionalSockets) {
-    for (const socket of pending.additionalSockets) {
-      try {
-        console.log(`[${new Date().toISOString()}] Sending response to additional socket for: ${pending.id}`);
-        socket.write(responseStr);
-        socket.end();
-      } catch (error) {
-        console.error('Failed to send response to additional socket:', error);
+    for (let i = 0; i < pending.additionalSockets.length; i++) {
+      const socket = pending.additionalSockets[i];
+      if (!socket.destroyed && socket.writable) {
+        try {
+          console.log(`[${new Date().toISOString()}] Sending to additional socket ${i} (writable=${socket.writable}, destroyed=${socket.destroyed})`);
+          // Use end(data) to ensure data is flushed before close
+          const idx = i;
+          socket.end(responseStr, () => {
+            console.log(`[${new Date().toISOString()}] Additional socket ${idx} flush completed for: ${pending.id}`);
+          });
+          sent = true;
+          console.log(`[${new Date().toISOString()}] Additional socket ${i} send initiated for: ${pending.id}`);
+        } catch (error) {
+          console.error(`[${new Date().toISOString()}] Failed to send response to additional socket ${i}:`, error);
+        }
+      } else {
+        console.log(`[${new Date().toISOString()}] Additional socket ${i} not available: destroyed=${socket.destroyed}, writable=${socket.writable}`);
       }
     }
+  }
+
+  if (!sent) {
+    console.error(`[${new Date().toISOString()}] ERROR: No available socket to send response for: ${pending.id}`);
   }
 
   // Cleanup maps
@@ -686,9 +768,9 @@ slackApp.message(async ({ message }) => {
     // Search directly in pendingRequests (not tsToPendingId) to find any pending request for this channel
     for (const [id, p] of pendingRequests.entries()) {
       console.log(`[${new Date().toISOString()}] Checking pending ${id}: channel=${p.slackChannel}, msgChannel=${msgEvent.channel}, match=${p.slackChannel === msgEvent.channel}`);
-      if (p.slackChannel === msgEvent.channel && !p.isQuestion) {
+      if (p.slackChannel === msgEvent.channel) {
         requestId = id;
-        break; // Use the first one found
+        break; // Use the first one found (questions and permission requests both supported)
       }
     }
     console.log(`[${new Date().toISOString()}] Direct message lookup: ${requestId}`);
@@ -702,18 +784,90 @@ slackApp.message(async ({ message }) => {
   const pending = pendingRequests.get(requestId);
   if (!pending) return;
 
-  // Skip questions - they need specific answers
+  const userId = msgEvent.user;
+  const text = msgEvent.text?.trim();
+  const textLower = text?.toLowerCase();
+
+  // Handle questions - thread reply as answer
   if (pending.isQuestion) {
-    console.log(`[${new Date().toISOString()}] Thread reply ignored for question: ${requestId}`);
+    console.log(`[${new Date().toISOString()}] Thread reply for question: ${requestId}, text: "${text}"`);
+
+    const questions = getQuestions(pending.request);
+    if (questions.length === 0) return;
+
+    // Use the reply text as the answer to the first unanswered question
+    if (!pending.answers) {
+      pending.answers = {};
+    }
+
+    // Find first unanswered question
+    let answeredIndex = -1;
+    for (let i = 0; i < questions.length; i++) {
+      if (pending.answers[i.toString()] === undefined) {
+        answeredIndex = i;
+        break;
+      }
+    }
+
+    if (answeredIndex === -1) {
+      console.log(`[${new Date().toISOString()}] All questions already answered for: ${requestId}`);
+      return;
+    }
+
+    // Check if text matches any option label
+    const question = questions[answeredIndex];
+    const matchedOption = question.options.find(
+      (opt) => opt.label.toLowerCase() === textLower
+    );
+
+    // Use matched option label or raw text
+    const answerValue = matchedOption ? matchedOption.label : text;
+
+    if (question.multiSelect) {
+      // For multiSelect, add to array
+      const currentAnswers = (pending.answers[answeredIndex.toString()] as string[]) || [];
+      currentAnswers.push(answerValue);
+      pending.answers[answeredIndex.toString()] = currentAnswers;
+    } else {
+      pending.answers[answeredIndex.toString()] = answerValue;
+    }
+
+    // Check if all questions are answered
+    const allAnswered = questions.every((q, idx) => {
+      const answer = pending.answers?.[idx.toString()];
+      if (q.multiSelect) {
+        return Array.isArray(answer) && answer.length > 0;
+      }
+      return answer !== undefined && answer !== '';
+    });
+
+    if (allAnswered) {
+      // Update Slack message
+      if (pending.slackTs && pending.slackChannel) {
+        const blocks = buildAnsweredQuestionBlocks(pending.request.session_id, questions, pending.answers, userId);
+        await slackApp.client.chat.update({
+          channel: pending.slackChannel,
+          ts: pending.slackTs,
+          text: '✅ Claude Code Question Answered',
+          blocks,
+        });
+      }
+
+      // Send response to hook
+      sendResponse(pending, 'allow', pending.answers);
+      console.log(`[${new Date().toISOString()}] Question answered via reply: ${requestId}`);
+    } else {
+      // Acknowledge partial answer
+      console.log(`[${new Date().toISOString()}] Partial answer received for question ${answeredIndex}: ${answerValue}`);
+    }
     return;
   }
 
+  // Handle permission requests
   const request = pending.request as PermissionRequest;
-  const userId = msgEvent.user;
-  const text = msgEvent.text?.toLowerCase().trim();
 
   // Check for approval text
-  if (['ok', 'approve', 'yes', 'y', 'allow', 'go'].includes(text)) {
+  if (['ok', 'approve', 'yes', 'y', 'allow', 'go'].includes(textLower)) {
     // Cache approval for this session
     const hash = createRequestHash(request.tool_name, request.tool_input);
     if (!sessionApprovals.has(request.session_id)) {
@@ -736,7 +890,7 @@ slackApp.message(async ({ message }) => {
     console.log(`[${new Date().toISOString()}] Approved via reply: ${request.tool_name} (${requestId})`);
   }
   // Check for denial text
-  else if (['no', 'deny', 'reject', 'n', 'stop', 'cancel'].includes(text)) {
+  else if (['no', 'deny', 'reject', 'n', 'stop', 'cancel'].includes(textLower)) {
     // Update Slack message
     if (pending.slackTs && pending.slackChannel) {
       const blocks = buildResultBlocks(request.tool_name, request.tool_input, request.session_id, 'denied', userId);
@@ -970,17 +1124,15 @@ async function handleRequest(request: PermissionRequest | UserQuestionRequest, s
     const existingPending = pendingRequests.get(existing.requestId);
     if (existingPending) {
       console.log(`[${new Date().toISOString()}] Duplicate request detected, attaching to existing: ${existing.requestId}`);
-      // Attach this socket to the existing pending request
-      // When the existing request is resolved, we'll also respond to this socket
-      const originalSocket = existingPending.socket;
-      existingPending.socket = null; // Clear single socket reference
+      // Move old socket to additionalSockets, use new socket as primary
+      // (Claude Code is waiting on the new socket, not the old one)
       if (!existingPending.additionalSockets) {
         existingPending.additionalSockets = [];
       }
-      if (originalSocket) {
-        existingPending.additionalSockets.push(originalSocket);
+      if (existingPending.socket) {
+        existingPending.additionalSockets.push(existingPending.socket);
       }
-      existingPending.additionalSockets.push(socket);
+      existingPending.socket = socket; // New socket becomes primary
       return;
     }
   }
@@ -1032,29 +1184,28 @@ async function handleRequest(request: PermissionRequest | UserQuestionRequest, s
     if (isQuestion) {
       const questions = getQuestions(request);
       if (questions.length === 0) {
-        // No questions, respond immediately with allow
-        const emptyResponse: PreToolUseOutput = {
-          hookSpecificOutput: {
-            hookEventName: 'PreToolUse',
-            permissionDecision: 'allow',
-            permissionDecisionReason: 'No questions to answer',
-          },
-        };
-        socket.write(JSON.stringify(emptyResponse) + '\n');
+        console.log(`[${new Date().toISOString()}] No questions in request, skipping notification`);
         socket.end();
         pendingRequests.delete(requestId);
         return;
       }
 
-      const blocks = buildQuestionNotificationBlocks(sessionId, questions);
+      // Notification only - no buttons, user answers in Claude Code terminal
+      const blocks = buildQuestionBlocks(requestId, sessionId, questions, false);
       const mention = SLACK_MENTION_USER_ID ? `<@${SLACK_MENTION_USER_ID}> ` : '';
       // Include question text for mobile notifications
       const questionPreview = questions[0]?.question || 'Question';
-      result = await slackApp.client.chat.postMessage({
+      await slackApp.client.chat.postMessage({
         channel: SLACK_CHANNEL_ID!,
         text: `${mention}❓ ${questionPreview}`,
         blocks,
       });
+
+      console.log(`[${new Date().toISOString()}] Question notification sent: ${requestId}`);
+      // Close socket immediately - notification only, no response needed
+      socket.end();
+      pendingRequests.delete(requestId);
+      return;
     } else {
       const permRequest = request as PermissionRequest;
       const blocks = buildApprovalBlocks(requestId, permRequest.tool_name, permRequest.tool_input, sessionId, true);

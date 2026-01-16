@@ -185,9 +185,6 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(allowResponse));
 
     // Send notification to Slack via detached child process
-    const { spawn } = await import('node:child_process');
-    const { fileURLToPath } = await import('node:url');
-    const path = await import('node:path');
     const __dirname = path.dirname(fileURLToPath(import.meta.url));
     const notifyScript = path.join(__dirname, 'notify.js');
 
