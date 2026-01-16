@@ -739,22 +739,13 @@ slackApp.event('reaction_added', async ({ event }) => {
 
 // Handle text reply (for Apple Watch support)
 // Supports both thread replies and direct channel messages
-// Using app.message() for better DM support in Bolt
-slackApp.message(async ({ message }) => {
+// Using app.event('message') for Socket Mode compatibility
+slackApp.event('message', async ({ event }) => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const msgEvent = message as any;
-
-  console.log(`[${new Date().toISOString()}] Message event received: channel=${msgEvent.channel}, text="${msgEvent.text}", thread_ts=${msgEvent.thread_ts}, subtype=${msgEvent.subtype}, bot_id=${msgEvent.bot_id}`);
+  const msgEvent = event as any;
 
   // Skip bot messages and message edits
-  if (msgEvent.subtype || msgEvent.bot_id) {
-    console.log(`[${new Date().toISOString()}] Skipping: subtype or bot message`);
-    return;
-  }
-
-  // Log pending state for debugging
-  console.log(`[${new Date().toISOString()}] Pending requests: ${Array.from(pendingRequests.entries()).map(([id, p]) => `${id}:${p.slackChannel}`).join(', ')}`);
-  console.log(`[${new Date().toISOString()}] tsToPendingId: ${Array.from(tsToPendingId.entries()).map(([ts, id]) => `${ts}:${id}`).join(', ')}`);
+  if (msgEvent.subtype || msgEvent.bot_id) return;
 
   // Try to find pending request - first check thread_ts, then find most recent pending
   let requestId: string | undefined;
@@ -762,24 +753,17 @@ slackApp.message(async ({ message }) => {
   if (msgEvent.thread_ts) {
     // Thread reply - look up by thread_ts
     requestId = tsToPendingId.get(msgEvent.thread_ts);
-    console.log(`[${new Date().toISOString()}] Thread reply lookup: ${requestId}`);
   } else {
     // Direct channel message (Apple Watch) - find most recent pending request in this channel
-    // Search directly in pendingRequests (not tsToPendingId) to find any pending request for this channel
     for (const [id, p] of pendingRequests.entries()) {
-      console.log(`[${new Date().toISOString()}] Checking pending ${id}: channel=${p.slackChannel}, msgChannel=${msgEvent.channel}, match=${p.slackChannel === msgEvent.channel}`);
       if (p.slackChannel === msgEvent.channel) {
         requestId = id;
-        break; // Use the first one found (questions and permission requests both supported)
+        break;
       }
     }
-    console.log(`[${new Date().toISOString()}] Direct message lookup: ${requestId}`);
   }
 
-  if (!requestId) {
-    console.log(`[${new Date().toISOString()}] No matching pending request found`);
-    return;
-  }
+  if (!requestId) return;
 
   const pending = pendingRequests.get(requestId);
   if (!pending) return;

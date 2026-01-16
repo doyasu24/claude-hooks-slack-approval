@@ -39,18 +39,20 @@ Go to "OAuth & Permissions" and add these scopes:
 - `chat:write` - Send messages
 - `chat:write.public` - Post to public channels (optional, for public channels only)
 - `im:write` - Send DMs (required for DM notifications)
+- `im:history` - Read DM messages (required for text reply approvals)
+- `channels:history` - Read channel messages (required for text reply approvals in channels)
 - `reactions:read` - Read reactions (for Apple Watch support)
 
-#### Event Subscriptions (for Apple Watch support)
+#### Event Subscriptions (required for Apple Watch support)
 
-To enable approval via emoji reactions or thread replies:
+To enable approval via emoji reactions or text replies:
 
 1. Go to "Event Subscriptions" in the left sidebar
-2. Enable Events
+2. **Enable Events** (toggle ON)
 3. Subscribe to bot events:
    - `reaction_added` - For emoji reaction approvals
-   - `message.im` - For thread reply approvals (DM)
-   - `message.channels` - For thread reply approvals (channels)
+   - `message.im` - For text reply approvals (DM)
+   - `message.channels` - For text reply approvals (channels)
 
 #### Install App
 
@@ -173,11 +175,13 @@ Since Slack's interactive buttons don't work on Apple Watch, you can approve/den
 - 👍 or ✅ → Approve
 - 👎 or ❌ → Deny
 
-**Thread Replies:**
+**Text Replies:**
 - "ok", "yes", "y", "approve", "allow", "go" → Approve
 - "no", "n", "deny", "reject", "stop", "cancel" → Deny
 
-Note: Emoji reactions and thread replies only work for PermissionRequest (tool approvals), not for AskUserQuestion (which requires selecting specific options).
+You can reply in the thread or directly to the channel/DM. Apple Watch notifications cannot reply to threads—they post directly to the channel/DM, which is also supported.
+
+Note: Emoji reactions and text replies only work for PermissionRequest (tool approvals), not for AskUserQuestion (which requires selecting specific options).
 
 ### AskUserQuestion (Notification Only)
 
