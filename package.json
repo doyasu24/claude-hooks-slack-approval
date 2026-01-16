@@ -1,0 +1,31 @@
+{
+  "name": "claude-hooks-slack-approval",
+  "version": "1.0.0",
+  "description": "Approve Claude Code PermissionRequests via Slack",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "server": "node --env-file-if-exists=.env dist/server.js",
+    "hook": "node dist/hook.js",
+    "hook-test": "node dist/hook.js --test"
+  },
+  "keywords": [
+    "claude",
+    "slack",
+    "approval",
+    "hooks"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@slack/bolt": "^4.1.0",
+    "@slack/web-api": "^7.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
